@@ -591,7 +591,7 @@ def write_summary(df, df_int, out_path):
 
 write_details(df_details, 'details.xlsx')
 write_summary(df_details, df_int, 'summary.xlsx')
-print("✅ Successfully generated details.xlsx and summary.xlsx")
+print("✅ Successfully generated details.xlsx & summary.xlsx")
 
 # Well Proz Excels
 df_wp = df_wellProz.rename(columns={
@@ -608,4 +608,4 @@ df_wp['commission_final'] = df_wp['commission_from_revenue'] - df_wp['commission
 
 write_details(df_wp,      'well_proz_details.xlsx')
 write_summary(df_wp, df_int, 'well_proz_summary.xlsx')
-print("✅ Successfully generated well_proz_details.xlsx 和 well_proz_summary.xlsx")
+print("✅ Successfully generated well_proz_details.xlsx & well_proz_summary.xlsx")
