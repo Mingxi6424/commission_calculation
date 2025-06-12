@@ -1,0 +1,14 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# environment
+env/
+venv/
+
+# SSL
+DigiCertGlobalRootCA.crt.pem
+
+# Excel generation
+*.xlsx
