@@ -434,14 +434,18 @@ df_details = (
 def calc_comm(r):
     role_id = int(r['sales_role_id'])
     base    = (r['revenue_pos'] + r['revenue_neg']) * 0.04
-    entries = []
-    entries += specific_map.get((role_id, int(r['customer_id'])), [])
-    entries += general_map.get(role_id, [])
+    cust_id = int(r['customer_id'])
+
+    if (role_id, cust_id) in specific_map:
+        rules = specific_map[(role_id, cust_id)]
+    else:
+        rules = general_map.get(role_id, [])
+
     total_paid = 0.0
     paid_to_senior = 0.0
     senior   = None
     
-    for ratio, to_sales in entries:
+    for ratio, to_sales in rules:
         share = base * (ratio / 100)
         total_paid += share
         if to_sales and to_sales != 0:
