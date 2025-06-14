@@ -432,25 +432,29 @@ df_details = (
 # 10. Commission Calculation 
 # -----------------------------
 def calc_comm(r):
-    role    = r['sales_role_id']
-    base    = (r['revenue_pos']+r['revenue_neg'])*0.04
-    paid_tot = paid_sen = 0.0
+    role_id = int(r['sales_role_id'])
+    base    = (r['revenue_pos'] + r['revenue_neg']) * 0.04
+    entries = []
+    entries += specific_map.get((role_id, int(r['customer_id'])), [])
+    entries += general_map.get(role_id, [])
+    total_paid = 0.0
+    paid_to_senior = 0.0
     senior   = None
-    if pd.notna(role):
-        maps = specific_map.get((int(role), int(r['customer_id'])),[]) \
-               or general_map.get(int(role),[])
-        for ratio,to in maps:
-            p = base*(ratio/100)
-            paid_tot += p
-            if to and to!=0:
-                paid_sen += p
-                senior = to
-    return pd.Series([paid_sen, senior, paid_tot],
-                     index=['commission_paid_to_senior','senior_sales_id','commission_paid_total'])
+    
+    for ratio, to_sales in entries:
+        share = base * (ratio / 100)
+        total_paid += share
+        if to_sales and to_sales != 0:
+            paid_to_senior += share
+            senior = to_sales
+
+    return pd.Series([paid_to_senior, senior, total_paid],
+                     index=['commission_paid_to_senior','senior_sales_id','commission_paid_total']
+    )
 
 df_details[['commission_paid_to_senior','senior_sales_id','commission_paid_total']] = \
     df_details.apply(calc_comm,axis=1)
-df_details['commission_from_revenue'] = (df_details['revenue_pos']+df_details['revenue_neg'])*0.04
+df_details['commission_from_revenue'] = (df_details['revenue_pos'] + df_details['revenue_neg']) * 0.04
 df_details['commission_final'] = df_details['commission_from_revenue'] - df_details['commission_paid_total']
 df_details['order_time'] = pd.to_datetime(df_details['created_date']).dt.strftime('%m/%d/%Y')
 
@@ -528,10 +532,10 @@ def write_summary(df, df_int, out_path):
     )
     paid_out['commission_to_others'] = -paid_out['commission_paid_out']
     paid_in = (
-        df.loc[df['senior_sales_id'].notna() & (df['senior_sales_id']!=0)]
-          .groupby('senior_sales_id', as_index=False)['commission_paid_to_senior']
-          .sum()
-          .rename(columns={'senior_sales_id':'sales_id','commission_paid_to_senior':'commission_from_others'})
+        df.loc[df['senior_sales_id'].notna()]
+        .groupby('senior_sales_id', as_index=False)['commission_paid_to_senior']
+        .sum()
+        .rename(columns={'senior_sales_id':'sales_id','commission_paid_to_senior':'commission_from_others'})
     )
 
     all_roles = set(df_int['internal_user_role_id'].dropna().astype(int)) | {0}
