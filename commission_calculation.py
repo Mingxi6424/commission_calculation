@@ -315,17 +315,17 @@ df_od = pd.read_sql(
     f"SELECT order_id,item_type_id,markup FROM lis_re.order_detail WHERE order_id IN ({','.join(map(str,order_ids2))});",
     engine_main
 )
+od_map = df_od.groupby('order_id')['item_type_id'].apply(list).to_dict()
 
 # 9.1 Skincare & NutriProz revenue
-od_map = df_od.groupby('order_id')['item_type_id'].apply(list).to_dict()
 def adjust_rev(r):
     total = r['revenue_pos'] + r['revenue_neg']
     if total <= 0:
         return r['revenue_pos'], r['revenue_neg']
     types = od_map.get(r['order_id'],[])
-    if 30001 in types:
+    if 30001 in types:  # NutriproZ
         return r['revenue_pos']-1051, r['revenue_neg']
-    if 30003 in types:
+    if 30003 in types:  # Skincare
         return r['revenue_pos']-101, r['revenue_neg']
     if any(30000<it<31000 and it not in (30001,30003) for it in types):
         return 0.0, 0.0
@@ -335,90 +335,68 @@ df_details[['revenue_pos','revenue_neg']] = df_details.apply(
     lambda r: pd.Series(adjust_rev(r)),axis=1
 )
 
-# 9.2 Add Comment
-comment_map = {}
-for oid,ids in od_map.items():
-    if   30001 in ids: comment_map[oid] = "NutriProZ"
-    elif 30003 in ids: comment_map[oid] = "Skincare"
-    elif any(30000<i<31000 and i not in (30001,30003) for i in ids):
-        comment_map[oid] = "No tests purchased"
-    else:
-        comment_map[oid] = ""
-df_details['comment'] = df_details['order_id'].map(comment_map).fillna("")
-
-# 9.3 Handle markup
-mark_map = df_od.groupby('order_id')['markup'] \
-               .sum() \
-               .fillna(0) \
-               .to_dict()
+# 9.2 Fetch and deduct markup
+mark_map = df_od.groupby('order_id')['markup'].sum().fillna(0).to_dict()
 df_details['total_markup'] = df_details['order_id'].map(mark_map).fillna(0)
-# Only deduct markup when revenue_pos + revenue_neg > 0, since commissions before April 2025 did not include markup
 mask = (df_details['revenue_pos'] + df_details['revenue_neg']) > 0
 df_details.loc[mask, 'revenue_pos'] -= df_details.loc[mask, 'total_markup']
 
-# 9.4 Add "Markup" in Comment field
-df_details['comment'] = df_details.apply(
-    lambda r: (r['comment']+";Markup") if r['total_markup']>0 and r['comment']!="" 
-                else ("Markup" if r['total_markup']>0 else r['comment']),
-    axis=1
-)
-
-# 9.5 Fetch Consultation Fee and add Comment
+# 9.3 Fetch consultation fee
 df_cf = pd.read_sql(
     f"""
-    SELECT order_id,
-           CONVERT(value USING utf8) AS fee_value
+    SELECT order_id, CONVERT(value USING utf8) AS fee_value
     FROM lis_re.order_additional_info
     WHERE `key` = 'consultationFee'
-      AND order_id IN ({','.join(map(str, order_ids2))});
+      AND order_id IN ({','.join(map(str,order_ids2))});
     """,
     engine_main
 )
-
-def parse_fee(x):
-    if pd.isna(x):
-        return 0.0
-    if isinstance(x, (bytes, bytearray)):
-        x = x.decode('utf-8')
-    return float(x)
-
-df_cf['consultation_fee'] = df_cf['fee_value'].apply(parse_fee)
-
-consultation_map = df_cf.set_index('order_id')['consultation_fee'].to_dict()
-df_details['consultation_fee'] = df_details['order_id'].map(consultation_map).fillna(0.0)
-
+df_cf['consultation_fee'] = df_cf['fee_value'].map(lambda x: float(x.decode('utf-8')) if isinstance(x, (bytes,bytearray)) else float(x)).fillna(0)
+consult_map = df_cf.set_index('order_id')['consultation_fee'].to_dict()
+df_details['consultation_fee'] = df_details['order_id'].map(consult_map).fillna(0)
 df_details.loc[mask, 'revenue_pos'] -= df_details.loc[mask, 'consultation_fee']
 
-df_details['comment'] = df_details.apply(
-    lambda r: (r['comment'] + '; Consultation Fee') 
-              if r['consultation_fee'] > 0 and r['comment'] != ''
-              else ('Consultation Fee' if r['consultation_fee'] > 0 else r['comment']),
-    axis=1
-)
-
-# 9.6 Fetch Concierge Fee and add Comment
+# 9.4 Fetch concierge fee
 df_cq = pd.read_sql(
-    f"""
-    SELECT order_id,
-           total AS concierge_fee
-    FROM lis_re.concierge_fee
-    WHERE order_id IN ({','.join(map(str, order_ids2))});
-    """,
+    f"SELECT order_id, total AS concierge_fee FROM lis_re.concierge_fee WHERE order_id IN ({','.join(map(str,order_ids2))});",
     engine_main
 )
-
 df_cq['concierge_fee'] = df_cq['concierge_fee'].astype(float)
-concierge_map = df_cq.set_index('order_id')['concierge_fee'].to_dict()
-df_details['concierge_fee'] = df_details['order_id'].map(concierge_map).fillna(0.0)
-
+cq_map = df_cq.set_index('order_id')['concierge_fee'].to_dict()
+df_details['concierge_fee'] = df_details['order_id'].map(cq_map).fillna(0)
 df_details.loc[mask, 'revenue_pos'] -= df_details.loc[mask, 'concierge_fee']
 
-df_details['comment'] = df_details.apply(
-    lambda r: (r['comment'] + '; Concierge Fee')
-              if r['concierge_fee'] > 0 and r['comment'] != ''
-              else ('Concierge Fee' if r['concierge_fee'] > 0 else r['comment']),
+# 9.5 Compute special deduction labels for NutriProZ/Skincare
+def special_amount_and_label(r):
+    types = od_map.get(r['order_id'], [])
+    if 30001 in types:
+        return 1051.0, "NutriProZ"
+    if 30003 in types:
+        return 101.0, "Skincare"
+    return 0.0, ""
+df_details[['special_deduction','special_label']] = df_details.apply(
+    lambda r: pd.Series(special_amount_and_label(r)),
     axis=1
 )
+
+# 9.6 Build the comment column
+def format_comment(r):
+    parts = []
+    # NutriProZ/Skincare
+    if r['special_deduction'] > 0:
+        parts.append(f"${r['special_deduction']:.2f} {r['special_label']}")
+    # Markup
+    if r['total_markup'] > 0:
+        parts.append(f"${r['total_markup']:.2f} Markup")
+    # Consultation Fee
+    if r['consultation_fee'] > 0:
+        parts.append(f"${r['consultation_fee']:.2f} Consultation Fee")
+    # Concierge Fee
+    if r['concierge_fee'] > 0:
+        parts.append(f"${r['concierge_fee']:.2f} Concierge Fee")
+    return "; ".join(parts)
+
+df_details['comment'] = df_details.apply(format_comment, axis=1)
 
 # 9.7 For each sample_id with multiple order_ids, keep only the smallest order_id
 # (e.g., a redraw creates a new order_id for the same sample_id)
