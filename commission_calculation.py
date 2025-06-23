@@ -108,7 +108,7 @@ for chunk in chunked_list(order_ids, 1000):
            o.charge_method,
            o1.sales_id    AS sales_user_id
     FROM lis_re.order_table o
-    LEFT JOIN coresamplesv2.customer cu 
+    LEFT JOIN lis_core_v7.customer cu 
       ON o.customer_id = cu.customer_id
     LEFT JOIN lis_core_v7.order_info o1 
       ON o1.billing_order_id = CONCAT(o.id, '')
@@ -150,7 +150,7 @@ SELECT
     o1.sales_id                      AS sales_user_id,
     iu.internal_user_role_id         AS sales_role_id
 FROM lis_re.order_table o
-LEFT JOIN coresamplesv2.customer cu 
+LEFT JOIN lis_core_v7.customer cu 
     ON o.customer_id = cu.customer_id
 LEFT JOIN lis_core_v7.order_info o1
     ON CAST(TRIM(o1.billing_order_id) AS UNSIGNED) = o.id
