@@ -13,6 +13,8 @@ import random
 import json
 from pathlib import Path
 from ratelimit import limits, sleep_and_retry
+import certifi
+
 
 # -----------------------------
 # 1. Database Connection Settings
@@ -29,13 +31,11 @@ PORT_AUX = 3307
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-CA_FILE = os.path.join(BASE_DIR, "DigiCertGlobalRootCA.crt.pem")
-if not os.path.isfile(CA_FILE):
-    raise FileNotFoundError(f"Cannot find SSL file: {CA_FILE}")
-
 engine_main = create_engine(
     f"mysql+pymysql://{USER_MAIN}:{PW_MAIN}@{HOST_MAIN}:{PORT_MAIN}/lis_billing",
-    connect_args={"ssl":{"ca": CA_FILE}}
+    connect_args={"ssl": {
+            "ca": certifi.where()  
+        }}
 )
 engine_aux = create_engine(
     f"mysql+pymysql://{USER_AUX}:{PW_AUX}@{HOST_AUX}:{PORT_AUX}/vibrant_statistics"
@@ -44,13 +44,47 @@ engine_aux = create_engine(
 # -----------------------------
 # 2. Commission Time range & Currency conversion
 # -----------------------------
-START_DATE = '2025-04-01'
-END_DATE   = '2025-05-01'
+START_DATE = '2025-08-01'
+END_DATE   = '2025-09-01'
 
 # Use end-of-month exchange rate for all currency conversions
+
+# RATES_2025_05_31
+# RATES = {
+#     'usd':1.00,'gbp':1.346,'eur':1.135,'chf':1 / 0.8227,
+#     'nok':1 / 10.218,'dkk':1 / 6.5561,'sek':0.10228,'mxn':1 / 19.430,'jpy':0.00694
+# }
+
+# RATES_2025_06_30
+# RATES = {
+#     'usd':1.00,'gbp':1.355,'eur':1.179,'chf':1.261,
+#     'nok':0.09932,'dkk':0.15799,'sek':0.10577,'mxn':0.05333,'jpy':0.00695
+# }
+
+# RATES_2025_07_31
+# RATES = {
+#     'usd': 1.00,
+#     'eur': 1.1416,
+#     'gbp': 1.3206,
+#     'chf': 1.2310,
+#     'nok': 0.0969,
+#     'sek': 0.1021,
+#     'mxn': 0.0530,
+#     'jpy': 0.0066,
+#     'dkk':0.15799
+# }
+
+# RATES_2025_08_31
 RATES = {
-    'usd':1.00,'gbp':1.335,'eur':1.085,'chf':0.96541,
-    'nok':0.09609,'dkk':0.15210,'sek':0.10228,'mxn':0.05120,'jpy':0.006902
+    'usd': 1.0000,
+    'eur': 1.1684,
+    'gbp': 1.3506,
+    'chf': 1.2495,
+    'nok': 0.0994,
+    'sek': 0.1057,
+    'mxn': 0.0536,
+    'jpy': 0.0068,
+    'dkk': 0.1566
 }
 
 # -----------------------------
@@ -113,7 +147,8 @@ for chunk in chunked_list(order_ids, 1000):
     LEFT JOIN lis_core_v7.order_info o1 
       ON o1.billing_order_id = CONCAT(o.id, '')
     WHERE o.id IN ({ids_sql})
-      AND o.charge_method <> 'wellProz';
+      AND o.charge_method <> 'wellProz'
+      AND o.sample_id not in (2322399, 2322403, 2322409, 2322976, 2322406, 2322412, 2346134);
     """
     detail_frames.append(pd.read_sql(q, engine_main))
 
@@ -161,6 +196,7 @@ WHERE o.charge_method = 'wellProz'
   AND o.created_date >= '{START_DATE}'
   AND o.created_date < '{END_DATE}'
   AND COALESCE(o.note, '') <> 'redraw'
+  AND o.sample_id not in (2316492, 2326004, 2340768, 2356728)
 ;
 """
 df_wellProz = pd.read_sql(query, engine_main)
