@@ -44,8 +44,8 @@ engine_aux = create_engine(
 # -----------------------------
 # 2. Commission Time range & Currency conversion
 # -----------------------------
-START_DATE = '2025-08-01'
-END_DATE   = '2025-09-01'
+START_DATE = '2026-01-01'
+END_DATE   = '2026-02-01'
 
 # Use end-of-month exchange rate for all currency conversions
 
@@ -75,16 +75,81 @@ END_DATE   = '2025-09-01'
 # }
 
 # RATES_2025_08_31
+# RATES = {
+#     'usd': 1.0000,
+#     'eur': 1.1684,
+#     'gbp': 1.3506,
+#     'chf': 1.2495,
+#     'nok': 0.0994,
+#     'sek': 0.1057,
+#     'mxn': 0.0536,
+#     'jpy': 0.0068,
+#     'dkk': 0.1566
+# }
+
+# RATES_2025_09_30
+# RATES = {
+#     'usd': 1.0000,
+#     'eur': 1.1684,
+#     'gbp': 1.3506,
+#     'chf': 1.2495,
+#     'nok': 0.0994,
+#     'sek': 0.1057,
+#     'mxn': 0.0536,
+#     'jpy': 0.0068,
+#     'dkk': 0.1566
+# }
+
+# RATES_2025_10_31
+# RATES = {
+#     'usd': 1.0000,
+#     'eur': 1.1607,   # 1 EUR = 1 / 0.8616 USD
+#     'gbp': 1.3150,   # 1 / 0.7602
+#     'chf': 1.2429,   # 1 / 0.8046
+#     'nok': 0.0989,   # 1 / 10.1162
+#     'sek': 0.1054,   # 1 / 9.4922
+#     'mxn': 0.0539,   # 1 / 18.5504
+#     'jpy': 0.0065,   # 1 / 153.8913
+#     'dkk': 0.1546    # 1 / 6.4686
+# }
+
+# RATES_2025_11_30
+# RATES = {
+#     'usd': 1.0000,
+#     'eur': 1.1601,   # 1 EUR ≈ 1.1601 USD
+#     'gbp': 1.3239,   # 1 GBP ≈ 1.3239 USD
+#     'chf': 1.2445,   # 1 CHF ≈ 1.2445 USD
+#     'nok': 0.0984,   # 1 NOK ≈ 0.0984 USD
+#     'sek': 0.1058,   # 1 SEK ≈ 0.1058 USD
+#     'mxn': 0.0547,   # 1 MXN ≈ 0.0547 USD
+#     'jpy': 0.00641,  # 1 JPY ≈ 0.00641 USD
+#     'dkk': 0.1547    # 1 DKK ≈ 0.1547 USD
+# }
+
+# RATES_2025_12_31
+# RATES = {
+#     'usd': 1.0000,
+#     'eur': 1.1733,   # 1 EUR ≈ 1.1733 USD 
+#     'gbp': 1.3448,   # 1 GBP ≈ 1.3448 USD 
+#     'chf': 1.2590,   # 1 CHF ≈ ~1.2590 USD
+#     'nok': 0.0985,   # 1 NOK ≈ ~0.0985 USD
+#     'sek': 0.1076,   # 1 SEK ≈ ~0.1076 USD
+#     'mxn': 0.0555,   # 1 MXN ≈ ~0.0555 USD
+#     'jpy': 0.00638,  # 1 JPY ≈ ~0.00638 USD
+#     'dkk': 0.1558    # 1 DKK ≈ ~0.1558 USD
+# }
+
+# RATES_2026_01_31 (approximate market FX)
 RATES = {
     'usd': 1.0000,
-    'eur': 1.1684,
-    'gbp': 1.3506,
-    'chf': 1.2495,
-    'nok': 0.0994,
-    'sek': 0.1057,
-    'mxn': 0.0536,
-    'jpy': 0.0068,
-    'dkk': 0.1566
+    'eur': 1.20,    # 1 EUR ≈ ~1.20 USD
+    'gbp': 1.38,    # 1 GBP ≈ ~1.38 USD
+    'chf': 1.31,    # 1 CHF ≈ ~1.31 USD
+    'nok': 0.104,   # 1 NOK ≈ ~0.104 USD
+    'sek': 0.114,   # 1 SEK ≈ ~0.114 USD
+    'mxn': 0.058,   # 1 MXN ≈ ~0.058 USD
+    'jpy': 0.0066,  # 1 JPY ≈ ~0.0066 USD
+    'dkk': 0.16     # 1 DKK ≈ ~0.16 USD
 }
 
 # -----------------------------
@@ -132,6 +197,25 @@ def chunked_list(lst, n):
 detail_frames = []
 for chunk in chunked_list(order_ids, 1000):
     ids_sql = ",".join(map(str,chunk))
+    # --- Coresample V1 to V2
+    # q = f"""
+    # SELECT o.id           AS order_id,
+    #        o.sample_id    AS sample_id,
+    #        o.customer_id  AS customer_id,
+    #        CONCAT(cu.customer_first_name,' ',cu.customer_last_name) AS customer_name,
+    #        o.patient_id   AS patient_id,
+    #        o.created_date AS created_date,
+    #        o.charge_method,
+    #        o1.sales_id    AS sales_user_id
+    # FROM lis_re.order_table o
+    # LEFT JOIN lis_core_v7.customer cu 
+    #   ON o.customer_id = cu.customer_id
+    # LEFT JOIN lis_core_v7.order_info o1 
+    #   ON o1.billing_order_id = CONCAT(o.id, '')
+    # WHERE o.id IN ({ids_sql})
+    #   AND o.charge_method <> 'wellProz'
+    #   AND o.sample_id not in (2322399, 2322403, 2322409, 2322976, 2322406, 2322412, 2346134);
+    # """
     q = f"""
     SELECT o.id           AS order_id,
            o.sample_id    AS sample_id,
@@ -142,9 +226,9 @@ for chunk in chunked_list(order_ids, 1000):
            o.charge_method,
            o1.sales_id    AS sales_user_id
     FROM lis_re.order_table o
-    LEFT JOIN lis_core_v7.customer cu 
+    LEFT JOIN coresamplesv2.customer cu 
       ON o.customer_id = cu.customer_id
-    LEFT JOIN lis_core_v7.order_info o1 
+    LEFT JOIN coresamplesv2.order_info o1 
       ON o1.billing_order_id = CONCAT(o.id, '')
     WHERE o.id IN ({ids_sql})
       AND o.charge_method <> 'wellProz'
@@ -173,6 +257,35 @@ if missing:
 # -----------------------------
 
 # 5.1 Get Well Proz orders through SQL
+
+# --- Coresample V1 to V2
+# query = f"""
+# SELECT 
+#     o.id                             AS order_id,
+#     o.sample_id,
+#     o.customer_id,
+#     CONCAT(cu.customer_first_name, ' ', cu.customer_last_name) AS customer_name,
+#     o.patient_id,
+#     o.created_date,
+#     o.julien_barcode,
+#     o1.sales_id                      AS sales_user_id,
+#     iu.internal_user_role_id         AS sales_role_id
+# FROM lis_re.order_table o
+# LEFT JOIN lis_core_v7.customer cu 
+#     ON o.customer_id = cu.customer_id
+# LEFT JOIN lis_core_v7.order_info o1
+#     ON CAST(TRIM(o1.billing_order_id) AS UNSIGNED) = o.id
+# LEFT JOIN lis_core_v7.internal_user iu
+#     ON iu.internal_user_id = o1.sales_id 
+#    AND iu.internal_user_role = 'sales'
+# WHERE o.charge_method = 'wellProz'
+#   AND o.created_date >= '{START_DATE}'
+#   AND o.created_date < '{END_DATE}'
+#   AND COALESCE(o.note, '') <> 'redraw'
+#   AND o.sample_id not in (2316492, 2326004, 2340768, 2356728, 2391972,2460864)
+# ;
+# """
+
 query = f"""
 SELECT 
     o.id                             AS order_id,
@@ -185,18 +298,32 @@ SELECT
     o1.sales_id                      AS sales_user_id,
     iu.internal_user_role_id         AS sales_role_id
 FROM lis_re.order_table o
-LEFT JOIN lis_core_v7.customer cu 
+LEFT JOIN coresamplesv2.customer cu 
     ON o.customer_id = cu.customer_id
-LEFT JOIN lis_core_v7.order_info o1
+LEFT JOIN coresamplesv2.order_info o1
     ON CAST(TRIM(o1.billing_order_id) AS UNSIGNED) = o.id
-LEFT JOIN lis_core_v7.internal_user iu
+LEFT JOIN coresamplesv2.internal_user iu
     ON iu.internal_user_id = o1.sales_id 
    AND iu.internal_user_role = 'sales'
 WHERE o.charge_method = 'wellProz'
   AND o.created_date >= '{START_DATE}'
   AND o.created_date < '{END_DATE}'
   AND COALESCE(o.note, '') <> 'redraw'
-  AND o.sample_id not in (2316492, 2326004, 2340768, 2356728)
+  AND o.sample_id not in (2316492, 2326004, 2340768, 2356728, 2391972,2460864,2238778,
+2234594,
+2234588,
+2227061,
+2227077,
+2238784,
+2233580,
+2238781,
+2227323,
+2224966,
+2238786,
+2238777,
+2238779,
+2225374,
+2227325)
 ;
 """
 df_wellProz = pd.read_sql(query, engine_main)
@@ -311,7 +438,8 @@ if sales_ids:
         SELECT internal_user_id AS id,
                internal_user_name,
                internal_user_role_id
-        FROM lis_core_v7.internal_user
+        # -- FROM lis_core_v7.internal_user
+        FROM coresamplesv2.internal_user
         WHERE internal_user_id IN ({','.join(map(str,sales_ids))})
           AND internal_user_role='sales';
         """,
@@ -324,6 +452,26 @@ df_details = df_details.merge(
     df_int[['id','internal_user_role_id']],
     left_on='sales_user_id', right_on='id', how='left'
 ).rename(columns={'internal_user_role_id':'sales_role_id'}).drop(columns=['id'])
+
+# ===== DEBUG: find missing sales_role_id =====
+bad = df_details[df_details['sales_role_id'].isna()][
+    ['order_id','sales_user_id','customer_id','created_date']
+].head(50)
+
+print("Rows with missing sales_role_id (showing up to 50):")
+print(bad)
+
+print("Missing sales_role_id count:", df_details['sales_role_id'].isna().sum())
+print(
+    "Distinct sales_user_id missing role:",
+    df_details.loc[df_details['sales_role_id'].isna(), 'sales_user_id'].nunique()
+)
+print(
+    "Example missing sales_user_ids:",
+    df_details.loc[df_details['sales_role_id'].isna(), 'sales_user_id']
+      .dropna().astype(int).unique()[:50]
+)
+# ===== END DEBUG =====
 
 # -----------------------------
 # 8. Fetch Commission Rule from Table vibrant_statistics.comm_sales_customer_distribute_new
