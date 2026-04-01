@@ -8,19 +8,20 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from tqdm import tqdm
 import xlsxwriter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 import random
 import json
 from pathlib import Path
 from ratelimit import limits, sleep_and_retry
 import certifi
+from typing import Optional
 
 
 # -----------------------------
 # 1. Database Connection Settings
 # -----------------------------
-USER_MAIN = 'vaportal'
-PW_MAIN   = 'vPI7P0G1zV6iERqM28'
+USER_MAIN = 'vamingxi'
+PW_MAIN   = '80UoA4s5K5O0KcaHU'
 HOST_MAIN = 'lisportalprod2.mysql.database.azure.com'
 PORT_MAIN = 3306
 
@@ -44,8 +45,8 @@ engine_aux = create_engine(
 # -----------------------------
 # 2. Commission Time range & Currency conversion
 # -----------------------------
-START_DATE = '2026-01-01'
-END_DATE   = '2026-02-01'
+START_DATE = '2026-02-01'
+END_DATE   = '2026-03-01'
 
 # Use end-of-month exchange rate for all currency conversions
 
@@ -153,6 +154,68 @@ RATES = {
 }
 
 # -----------------------------
+# Add Helpers
+# -----------------------------
+def chunked_list(lst, n):
+    for i in range(0, len(lst), n):
+        yield lst[i:i+n]
+
+def fail_with_orders(title: str, df: pd.DataFrame, cols, max_show: int = 50, exit_code: int = 1):
+    print(f"❌ {title}")
+    if df.empty:
+        print("(no rows)")
+    else:
+        print(df[cols].drop_duplicates().head(max_show))
+        print("Total rows:", len(df))
+    sys.exit(exit_code)
+
+def assert_sales_role_present(
+    df_orders_like: pd.DataFrame,
+    df_int_map: pd.DataFrame,
+    *,
+    df_name: str,
+    sales_user_col: str = 'sales_user_id',
+    order_id_col: str = 'order_id',
+    barcode_col: Optional[str] = None
+):
+    """
+    Validate sales_role_id resolution for an orders dataframe.
+    - df_orders_like must have sales_user_id and order_id (and optional barcode)
+    - df_int_map must have columns: id, internal_user_role_id
+    Stops program and prints offending order_ids if any sales_role_id is missing.
+    """
+    # 1) sales_user_id null check
+    bad_null = df_orders_like[df_orders_like[sales_user_col].isna()].copy()
+    if not bad_null.empty:
+        cols = [order_id_col, sales_user_col]
+        if barcode_col and barcode_col in bad_null.columns:
+            cols.append(barcode_col)
+        fail_with_orders(f"{df_name}: sales_user_id is NULL", bad_null, cols)
+
+    # 2) negative/placeholder id check
+    bad_neg = df_orders_like[df_orders_like[sales_user_col].astype(int) < 0].copy()
+    if not bad_neg.empty:
+        cols = [order_id_col, sales_user_col]
+        if barcode_col and barcode_col in bad_neg.columns:
+            cols.append(barcode_col)
+        fail_with_orders(f"{df_name}: sales_user_id is negative (placeholder)", bad_neg, cols)
+
+    # 3) join check
+    df_chk = df_orders_like.merge(
+        df_int_map[['id', 'internal_user_role_id']],
+        left_on=sales_user_col,
+        right_on='id',
+        how='left'
+    ).rename(columns={'internal_user_role_id': 'sales_role_id_resolved'})
+
+    bad_join = df_chk[df_chk['sales_role_id_resolved'].isna()].copy()
+    if not bad_join.empty:
+        cols = [order_id_col, sales_user_col]
+        if barcode_col and barcode_col in bad_join.columns:
+            cols.append(barcode_col)
+        fail_with_orders(f"{df_name}: cannot resolve sales_role_id (internal_user join missing)", bad_join, cols)
+
+# -----------------------------
 # 3. Read Table lis_billing.applies data and split positive/negative revenue
 # -----------------------------
 query_applies = f"""
@@ -190,32 +253,10 @@ if not order_ids:
 # -----------------------------
 # 4. Fetch orders from lis_re.order_table, and join sales_user_id
 # -----------------------------
-def chunked_list(lst, n):
-    for i in range(0, len(lst), n):
-        yield lst[i:i+n]
-
 detail_frames = []
 for chunk in chunked_list(order_ids, 1000):
     ids_sql = ",".join(map(str,chunk))
-    # --- Coresample V1 to V2
-    # q = f"""
-    # SELECT o.id           AS order_id,
-    #        o.sample_id    AS sample_id,
-    #        o.customer_id  AS customer_id,
-    #        CONCAT(cu.customer_first_name,' ',cu.customer_last_name) AS customer_name,
-    #        o.patient_id   AS patient_id,
-    #        o.created_date AS created_date,
-    #        o.charge_method,
-    #        o1.sales_id    AS sales_user_id
-    # FROM lis_re.order_table o
-    # LEFT JOIN lis_core_v7.customer cu 
-    #   ON o.customer_id = cu.customer_id
-    # LEFT JOIN lis_core_v7.order_info o1 
-    #   ON o1.billing_order_id = CONCAT(o.id, '')
-    # WHERE o.id IN ({ids_sql})
-    #   AND o.charge_method <> 'wellProz'
-    #   AND o.sample_id not in (2322399, 2322403, 2322409, 2322976, 2322406, 2322412, 2346134);
-    # """
+    # 2026-01: Update CoreV1 "lis_core_v7" schema to CoreV2 "coresamplesv2" schema:
     q = f"""
     SELECT o.id           AS order_id,
            o.sample_id    AS sample_id,
@@ -255,37 +296,8 @@ if missing:
 # -----------------------------
 # 5. Fetch Well Proz orders and Call Kang's API for revenue
 # -----------------------------
-
 # 5.1 Get Well Proz orders through SQL
-
-# --- Coresample V1 to V2
-# query = f"""
-# SELECT 
-#     o.id                             AS order_id,
-#     o.sample_id,
-#     o.customer_id,
-#     CONCAT(cu.customer_first_name, ' ', cu.customer_last_name) AS customer_name,
-#     o.patient_id,
-#     o.created_date,
-#     o.julien_barcode,
-#     o1.sales_id                      AS sales_user_id,
-#     iu.internal_user_role_id         AS sales_role_id
-# FROM lis_re.order_table o
-# LEFT JOIN lis_core_v7.customer cu 
-#     ON o.customer_id = cu.customer_id
-# LEFT JOIN lis_core_v7.order_info o1
-#     ON CAST(TRIM(o1.billing_order_id) AS UNSIGNED) = o.id
-# LEFT JOIN lis_core_v7.internal_user iu
-#     ON iu.internal_user_id = o1.sales_id 
-#    AND iu.internal_user_role = 'sales'
-# WHERE o.charge_method = 'wellProz'
-#   AND o.created_date >= '{START_DATE}'
-#   AND o.created_date < '{END_DATE}'
-#   AND COALESCE(o.note, '') <> 'redraw'
-#   AND o.sample_id not in (2316492, 2326004, 2340768, 2356728, 2391972,2460864)
-# ;
-# """
-
+# 2026-01: Update CoreV1 "lis_core_v7" schema to CoreV2 "coresamplesv2" schema:
 query = f"""
 SELECT 
     o.id                             AS order_id,
@@ -323,7 +335,14 @@ WHERE o.charge_method = 'wellProz'
 2238777,
 2238779,
 2225374,
-2227325)
+2227325,
+2489793,
+2486715，
+2498866，
+2502442，
+2502485，
+2502486
+)
 ;
 """
 df_wellProz = pd.read_sql(query, engine_main)
@@ -331,10 +350,15 @@ if df_wellProz.empty:
     print("No WellProz orders found. ")
     sys.exit(0)
 
-# 5.2 Handle Exception
-missing = df_wellProz[df_wellProz['sales_user_id'].isna()]['order_id'].tolist()
-print("The following orders have no sales_id in order_info:", missing)
-df_wellProz['sales_user_id'] = df_wellProz['sales_user_id'].fillna(-1).astype(int)
+# 5.2 Fail Fast instead of handling exception:
+bad_sales_null = df_wellProz[df_wellProz['sales_user_id'].isna()]
+if not bad_sales_null.empty:
+    fail_with_orders(
+        "WellProz: order_info.sales_id is NULL (cannot calculate commission)",
+        bad_sales_null,
+        ['order_id', 'julien_barcode', 'customer_id', 'created_date']
+    )
+df_wellProz['sales_user_id'] = df_wellProz['sales_user_id'].astype(int)
 
 # 5.3 Local Cache
 CACHE_FILE = Path(BASE_DIR) / "profit_cache.json"
@@ -351,17 +375,56 @@ session.mount("https://", HTTPAdapter(max_retries=Retry(total=0)))
 ONE_SECOND = 1
 @sleep_and_retry
 @limits(calls=1, period=ONE_SECOND)
+# def fetch_profit_once(barcode):
+#     url = f"https://api.wellproz.com/wellproz_api/order/seller/getLabProfitByBarcode?barcode={barcode}"
+#     resp = session.get(url, timeout=10)
+#     resp.raise_for_status()
+#     txt = resp.text
+#     return float(txt[txt.find(':')+1:txt.rfind('}')].strip())
+
+# Well Proz Team updated the internal API:
 def fetch_profit_once(barcode):
     url = f"https://api.wellproz.com/wellproz_api/order/seller/getLabProfitByBarcode?barcode={barcode}"
     resp = session.get(url, timeout=10)
+    print(f"[DEBUG] barcode={barcode}, status={resp.status_code}, text={resp.text[:300]}")
     resp.raise_for_status()
-    txt = resp.text
-    return float(txt[txt.find(':')+1:txt.rfind('}')].strip())
+
+    data = resp.json()
+
+    # case 1: plain numeric response
+    if isinstance(data, (int, float)):
+        return float(data)
+
+    # case 2: dict response
+    if isinstance(data, dict):
+        # fixed-key formats
+        for key in ['data', 'profit', 'labProfit', 'result']:
+            if key in data and data[key] is not None:
+                return float(data[key])
+
+        # dynamic single-key dict, e.g. {"20996": 520.00}
+        if len(data) == 1:
+            only_key, only_val = next(iter(data.items()))
+            print(f"[DEBUG] barcode={barcode}, api_key={only_key}, api_profit={only_val}")
+            return float(only_val)
+
+        # fallback: if exactly one numeric-convertible value exists
+        numeric_values = []
+        for v in data.values():
+            try:
+                numeric_values.append(float(v))
+            except (TypeError, ValueError):
+                pass
+        if len(numeric_values) == 1:
+            return numeric_values[0]
+
+    raise ValueError(f"Unexpected API response for barcode {barcode}: {data}")
 
 # 5.6 Wrap it with exponential backoff:
 def fetch_with_backoff(barcode, max_attempts = 5):
     if not barcode:
-        return 0.0
+        return "NA"
+
     if barcode in profit_map:
         return profit_map[barcode]
 
@@ -371,27 +434,34 @@ def fetch_with_backoff(barcode, max_attempts = 5):
             val = fetch_profit_once(barcode)
             profit_map[barcode] = val
             return val
+
         except requests.exceptions.HTTPError as e:
             code = e.response.status_code
-            if code == 429:
-                # Read Retry-After when 429
-                ra = e.response.headers.get("Retry-After")
-                wait = float(ra) if ra and ra.isdigit() else delay
-                print(f"[WARN ] {barcode}: 429, retry after {wait}s")
-                time.sleep(wait + random.uniform(0,0.5))
-            elif 500 <= code < 600:
-                print(f"[WARN ] {barcode}: {code} server error, retry in {delay}s")
-                time.sleep(delay + random.uniform(0,0.5))
-            else:
-                print(f"[ERROR] {barcode}: HTTP {code}, give up")
-                break
-            delay *= 2
-        except Exception as e:
-            print(f"[ERROR] {barcode}: {e}, give up")
-            break
 
-    profit_map[barcode] = 0.0
-    return 0.0
+            if 500 <= code < 600:
+                if attempt == max_attempts:
+                    print(f"[ERROR] {barcode}: API still failing after {max_attempts} attempts → NA")
+                    profit_map[barcode] = "NA"
+                    return "NA"
+
+                print(f"[WARN ] {barcode}: HTTP {code}, retry in {delay}s (attempt {attempt}/{max_attempts})")
+                time.sleep(delay + random.uniform(0, 0.5))
+                delay = min(delay * 2, 30)   # 防止 delay 爆炸
+
+            else:
+                print(f"[ERROR] {barcode}: HTTP {code} → NA")
+                profit_map[barcode] = "NA"
+                return "NA"
+
+        except Exception as e:
+            if attempt == max_attempts:
+                print(f"[ERROR] {barcode}: {e} → NA")
+                profit_map[barcode] = "NA"
+                return "NA"
+
+            print(f"[WARN ] {barcode}: {e}, retry in {delay}s (attempt {attempt}/{max_attempts})")
+            time.sleep(delay + random.uniform(0, 0.5))
+            delay = min(delay * 2, 30)
 
 # 5.7 Parallel fetch for uncached barcodes
 codes = df_wellProz['julien_barcode'].dropna().unique().tolist()
@@ -406,13 +476,46 @@ with ThreadPoolExecutor(max_workers=2) as executor:
     ):
         profit_map[bc] = val
 
+# ===== Debug API ====        
+# codes = df_wellProz['julien_barcode'].dropna().unique().tolist()
+# print("test barcode:", codes[0])
+# print("test result:", fetch_with_backoff(codes[0], max_attempts=5))
+# sys.exit(0)
+
 # 5.8 Update cache
 CACHE_FILE.write_text(json.dumps(profit_map))
 
 # 5.9 Map results back onto the DataFrame:
-df_wellProz['revenue_usd']     = df_wellProz['julien_barcode'].map(profit_map).fillna(0.0)
+df_wellProz['revenue_usd'] = df_wellProz['julien_barcode'].map(profit_map)
+df_wellProz['api_failed'] = df_wellProz['revenue_usd'].eq("NA")
+
+df_wellProz.loc[df_wellProz['revenue_usd'] == "NA", 'revenue_usd'] = pd.NA
+df_wellProz['revenue_usd'] = pd.to_numeric(df_wellProz['revenue_usd'], errors='coerce')
+
 df_wellProz['revenue_payment'] = df_wellProz['revenue_usd'].clip(lower=0)
-df_wellProz['revenue_refund']  = df_wellProz['revenue_usd'].clip(upper=0)
+df_wellProz['revenue_refund'] = df_wellProz['revenue_usd'].clip(upper=0)
+
+print("===== WELLPROZ DEBUG AFTER 5.9 =====")
+def is_numeric_value(v):
+    try:
+        float(v)
+        return True
+    except (TypeError, ValueError):
+        return False
+print("profit_map size:", len(profit_map))
+
+cached_na_values = sum(1 for v in profit_map.values() if v == "NA")
+cached_zero_values = sum(1 for v in profit_map.values() if is_numeric_value(v) and float(v) == 0.0)
+cached_nonzero_values = sum(1 for v in profit_map.values() if is_numeric_value(v) and float(v) != 0.0)
+
+print("cached NA values:", cached_na_values)
+print("cached zero values:", cached_zero_values)
+print("cached non-zero values:", cached_nonzero_values)
+
+print("NA revenue_usd count:", df_wellProz['revenue_usd'].isna().sum())
+print("nonzero revenue_usd count:", (df_wellProz['revenue_usd'].fillna(0) != 0).sum())
+print(df_wellProz[['order_id', 'julien_barcode', 'revenue_usd', 'revenue_payment', 'revenue_refund']].head(20))
+print("===== END DEBUG AFTER 5.9 =====")
 
 # -----------------------------
 # 6. Merge revenue & filter entries without sales
@@ -429,11 +532,12 @@ df_details['sales_user_id'] = df_details['sales_user_id'].astype(int)
 df_details['customer_name'] = df_details['customer_name'].fillna('Direct Order')
 
 # -----------------------------
-# 7. Fetch the sales mapping
+# 7. Fetch the sales mapping (non-WellProz)
 # -----------------------------
 sales_ids = df_details['sales_user_id'].unique().tolist()
 if sales_ids:
     df_int = pd.read_sql(
+        # 2026-01: Update CoreV1 "lis_core_v7" schema to CoreV2 "coresamplesv2" schema:
         f"""
         SELECT internal_user_id AS id,
                internal_user_name,
@@ -454,24 +558,34 @@ df_details = df_details.merge(
 ).rename(columns={'internal_user_role_id':'sales_role_id'}).drop(columns=['id'])
 
 # ===== DEBUG: find missing sales_role_id =====
-bad = df_details[df_details['sales_role_id'].isna()][
-    ['order_id','sales_user_id','customer_id','created_date']
-].head(50)
+# bad = df_details[df_details['sales_role_id'].isna()][
+#     ['order_id','sales_user_id','customer_id','created_date']
+# ].head(50)
 
-print("Rows with missing sales_role_id (showing up to 50):")
-print(bad)
+# print("Rows with missing sales_role_id (showing up to 50):")
+# print(bad)
 
-print("Missing sales_role_id count:", df_details['sales_role_id'].isna().sum())
-print(
-    "Distinct sales_user_id missing role:",
-    df_details.loc[df_details['sales_role_id'].isna(), 'sales_user_id'].nunique()
-)
-print(
-    "Example missing sales_user_ids:",
-    df_details.loc[df_details['sales_role_id'].isna(), 'sales_user_id']
-      .dropna().astype(int).unique()[:50]
-)
+# print("Missing sales_role_id count:", df_details['sales_role_id'].isna().sum())
+# print(
+#     "Distinct sales_user_id missing role:",
+#     df_details.loc[df_details['sales_role_id'].isna(), 'sales_user_id'].nunique()
+# )
+# print(
+#     "Example missing sales_user_ids:",
+#     df_details.loc[df_details['sales_role_id'].isna(), 'sales_user_id']
+#       .dropna().astype(int).unique()[:50]
+# )
 # ===== END DEBUG =====
+
+# Fail fast if any missing role in df_details
+assert_sales_role_present(
+    df_details,
+    df_int,
+    df_name="Non-WellProz(df_details)",
+    sales_user_col='sales_user_id',
+    order_id_col='order_id',
+    barcode_col=None
+)
 
 # -----------------------------
 # 8. Fetch Commission Rule from Table vibrant_statistics.comm_sales_customer_distribute_new
@@ -594,6 +708,12 @@ df_details = (
 # 10. Commission Calculation 
 # -----------------------------
 def calc_comm(r):
+    # Fail fast in case upstream validation is bypassed
+    if pd.isna(r.get('sales_role_id')):
+        raise ValueError(
+            f"sales_role_id is NaN for order_id={r.get('order_id')} sales_user_id={r.get('sales_user_id')}"
+        )
+    
     role_id = int(r['sales_role_id'])
     base    = (r['revenue_pos'] + r['revenue_neg']) * 0.04
     cust_id = int(r['customer_id'])
@@ -641,26 +761,36 @@ def write_details(df, out_path):
     df = df.copy()
     df['order_time'] = pd.to_datetime(df['created_date']).dt.strftime('%m/%d/%Y')
 
+    agg_dict = {
+        'sales_role_id':           'first',
+        'revenue_pos':             'sum',
+        'revenue_neg':             'sum',
+        'commission_from_revenue': 'sum',
+        'commission_final':        'sum',
+        'comment':                 'first'
+    }
+    if 'api_failed' in df.columns:
+        agg_dict['api_failed'] = 'max'
+
     df_out = (
         df
         .groupby(
             ['sample_id','patient_id','customer_id','customer_name','order_time'],
             as_index=False
         )
-        .agg({
-            'sales_role_id':           'first',
-            'revenue_pos':             'sum',
-            'revenue_neg':             'sum',
-            'commission_from_revenue': 'sum',
-            'commission_final':        'sum',
-            'comment':                 'first'
-        })
+        .agg(agg_dict)
         .rename(columns={
             'sales_role_id': 'sales_id',
             'revenue_pos':   'revenue_payment',
             'revenue_neg':   'revenue_refund'
         })
     )
+
+    if 'api_failed' in df_out.columns:
+        na_cols = ['revenue_payment', 'revenue_refund', 'commission_from_revenue', 'commission_final']
+        for c in na_cols:
+            df_out.loc[df_out['api_failed'] == True, c] = 'NA'
+        df_out = df_out.drop(columns=['api_failed'])
 
     cols = [
         'sample_id','patient_id','customer_id','customer_name',
@@ -679,11 +809,15 @@ def write_details(df, out_path):
         for col, wd in col_widths.items():
             ws.set_column(f"{col}:{col}", wd)
 
-# -----------------------------
-# 12. Generate Commission Summary
-# -----------------------------
 def write_summary(df, df_int, out_path):
     df = df.copy()
+
+    # Ignore WellProz API failed rows in summary
+    if 'api_failed' in df.columns:
+        df = df[~df['api_failed']].copy()
+
+    df = df[df['revenue_pos'].notna() & df['revenue_neg'].notna()].copy()
+
     df['net_revenue'] = df['revenue_pos'] + df['revenue_neg']
 
     rev_grp = (
@@ -756,14 +890,15 @@ def write_summary(df, df_int, out_path):
             ws2.set_column(f"{col}:{col}", wd)
 
 # -----------------------------
-# 13. Generate Details Excel & Summary Excel
+# 12. Generate Details Excel & Summary Excel (non-WellProz)
 # -----------------------------
-
 write_details(df_details, 'details.xlsx')
 write_summary(df_details, df_int, 'summary.xlsx')
 print("✅ Successfully generated details.xlsx & summary.xlsx")
 
-# Well Proz Excels
+# -----------------------------
+# 13. WellProz: build df_wp + validate sales_role_id + generate excels
+# -----------------------------
 df_wp = df_wellProz.rename(columns={
     'revenue_payment':'revenue_pos',
     'revenue_refund':'revenue_neg'
@@ -771,11 +906,56 @@ df_wp = df_wellProz.rename(columns={
 
 df_wp['comment'] = ''
 
-df_wp[['commission_paid_to_senior','senior_sales_id','commission_paid_total']] = \
-    df_wp.apply(calc_comm, axis=1)
+print("===== WELLPROZ DEBUG AFTER df_wp BUILD =====")
+print("nonzero revenue_pos count:", (df_wp['revenue_pos'] != 0).sum())
+print("nonzero revenue_neg count:", (df_wp['revenue_neg'] != 0).sum())
+print(df_wp[['order_id', 'julien_barcode', 'revenue_pos', 'revenue_neg']].head(20))
+print("===== END DEBUG AFTER df_wp BUILD =====")
+
+# Build df_int_wp from df_wp sales_user_id
+sales_ids_wp = df_wp['sales_user_id'].dropna().astype(int).unique().tolist()
+df_int_wp = pd.read_sql(f"""
+    SELECT internal_user_id AS id, internal_user_name, internal_user_role_id
+    FROM coresamplesv2.internal_user
+    WHERE internal_user_id IN ({','.join(map(str,sales_ids_wp))})
+      AND internal_user_role='sales';
+""", engine_main)
+
+# Fail fast if any WellProz order cannot resolve sales_role_id
+assert_sales_role_present(
+    df_wp,
+    df_int_wp,
+    df_name="WellProz(df_wp)",
+    sales_user_col='sales_user_id',
+    order_id_col='order_id',
+    barcode_col='julien_barcode'
+)
+
+# Populate sales_role_id on df_wp
+df_wp = df_wp.drop(columns=['sales_role_id'], errors='ignore')
+df_wp = df_wp.merge(
+    df_int_wp[['id','internal_user_role_id']],
+    left_on='sales_user_id', right_on='id', how='left'
+).rename(columns={'internal_user_role_id':'sales_role_id'}).drop(columns=['id'])
+
+# Well Proz Commission
+# Successful rows only: calculate commission normally
+ok_mask = df_wp['revenue_pos'].notna() & df_wp['revenue_neg'].notna()
+
+df_wp.loc[ok_mask, ['commission_paid_to_senior','senior_sales_id','commission_paid_total']] = \
+    df_wp.loc[ok_mask].apply(calc_comm, axis=1)
+
+# Failed rows: keep commission as NA
+df_wp.loc[~ok_mask, 'commission_paid_to_senior'] = pd.NA
+df_wp.loc[~ok_mask, 'senior_sales_id'] = pd.NA
+df_wp.loc[~ok_mask, 'commission_paid_total'] = pd.NA
+
 df_wp['commission_from_revenue'] = (df_wp['revenue_pos'] + df_wp['revenue_neg']) * 0.04
 df_wp['commission_final'] = df_wp['commission_from_revenue'] - df_wp['commission_paid_total']
 
+# For WellProz summary, union non-WellProz + WellProz internal_user maps
+df_int_all = pd.concat([df_int, df_int_wp], ignore_index=True).drop_duplicates(subset=['id'])
+
 write_details(df_wp,      'well_proz_details.xlsx')
-write_summary(df_wp, df_int, 'well_proz_summary.xlsx')
+write_summary(df_wp, df_int_all, 'well_proz_summary.xlsx')
 print("✅ Successfully generated well_proz_details.xlsx & well_proz_summary.xlsx")
