@@ -141,16 +141,29 @@ END_DATE   = '2026-03-01'
 # }
 
 # RATES_2026_01_31 (approximate market FX)
+# RATES = {
+#     'usd': 1.0000,
+#     'eur': 1.20,    # 1 EUR ≈ ~1.20 USD
+#     'gbp': 1.38,    # 1 GBP ≈ ~1.38 USD
+#     'chf': 1.31,    # 1 CHF ≈ ~1.31 USD
+#     'nok': 0.104,   # 1 NOK ≈ ~0.104 USD
+#     'sek': 0.114,   # 1 SEK ≈ ~0.114 USD
+#     'mxn': 0.058,   # 1 MXN ≈ ~0.058 USD
+#     'jpy': 0.0066,  # 1 JPY ≈ ~0.0066 USD
+#     'dkk': 0.16     # 1 DKK ≈ ~0.16 USD
+# }
+
+# RATES_2026_02
 RATES = {
     'usd': 1.0000,
-    'eur': 1.20,    # 1 EUR ≈ ~1.20 USD
-    'gbp': 1.38,    # 1 GBP ≈ ~1.38 USD
-    'chf': 1.31,    # 1 CHF ≈ ~1.31 USD
-    'nok': 0.104,   # 1 NOK ≈ ~0.104 USD
-    'sek': 0.114,   # 1 SEK ≈ ~0.114 USD
-    'mxn': 0.058,   # 1 MXN ≈ ~0.058 USD
-    'jpy': 0.0066,  # 1 JPY ≈ ~0.0066 USD
-    'dkk': 0.16     # 1 DKK ≈ ~0.16 USD
+    'eur': 1.18,    
+    'gbp': 1.37,   
+    'chf': 1.29,   
+    'nok': 0.103,
+    'sek': 0.112,  
+    'mxn': 0.057,  
+    'jpy': 0.0066,
+    'dkk': 0.159 
 }
 
 # -----------------------------
@@ -251,6 +264,42 @@ if not order_ids:
     sys.exit(0)
 
 # -----------------------------
+# 3.1 Read fake customer list from lis_charging.sandbox_lists
+# -----------------------------
+df_sandbox = pd.read_sql("""
+    SELECT DISTINCT customer_id
+    FROM lis_charging.sandbox_lists
+    WHERE customer_id IS NOT NULL;
+""", engine_main)
+
+sandbox_customer_ids = set(
+    pd.to_numeric(df_sandbox['customer_id'], errors='coerce')
+      .dropna()
+      .astype(int)
+      .tolist()
+)
+
+print(f"Sandbox customer count: {len(sandbox_customer_ids)}")
+
+# -----------------------------
+# 3.2 Mark the commission to $0 for fake customers
+# -----------------------------
+def zero_out_sandbox_commission(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    mask = df['is_sandbox_customer'].fillna(False)
+
+    df.loc[mask, 'revenue_pos'] = 0
+    df.loc[mask, 'revenue_neg'] = 0
+    df.loc[mask, 'commission_paid_to_senior'] = 0
+    df.loc[mask, 'senior_sales_id'] = 0
+    df.loc[mask, 'commission_paid_total'] = 0
+    df.loc[mask, 'commission_from_revenue'] = 0
+    df.loc[mask, 'commission_final'] = 0
+    df.loc[mask, 'comment'] = 'sandbox customer - commission forced to $0'
+
+    return df
+
+# -----------------------------
 # 4. Fetch orders from lis_re.order_table, and join sales_user_id
 # -----------------------------
 detail_frames = []
@@ -273,7 +322,7 @@ for chunk in chunked_list(order_ids, 1000):
       ON o1.billing_order_id = CONCAT(o.id, '')
     WHERE o.id IN ({ids_sql})
       AND o.charge_method <> 'wellProz'
-      AND o.sample_id not in (2322399, 2322403, 2322409, 2322976, 2322406, 2322412, 2346134);
+      AND o.sample_id not in (2322399,2322403,2322409,2322976,2322406,2322412,2346134);
     """
     detail_frames.append(pd.read_sql(q, engine_main))
 
@@ -337,10 +386,10 @@ WHERE o.charge_method = 'wellProz'
 2225374,
 2227325,
 2489793,
-2486715，
-2498866，
-2502442，
-2502485，
+2486715,
+2498866,
+2502442,
+2502485,
 2502486
 )
 ;
@@ -526,10 +575,14 @@ df_revenue['order_id'] = pd.to_numeric(df_revenue['order_id'], errors='raise').a
 df_details = (
     df_orders
     .merge(df_revenue, on='order_id', how='inner')
-)
-df_details = df_details[df_details['sales_user_id'].notna()]
+).copy()
+
+df_details = df_details[df_details['sales_user_id'].notna()].copy()
 df_details['sales_user_id'] = df_details['sales_user_id'].astype(int)
 df_details['customer_name'] = df_details['customer_name'].fillna('Direct Order')
+
+df_details['customer_id'] = pd.to_numeric(df_details['customer_id'], errors='coerce')
+df_details['is_sandbox_customer'] = df_details['customer_id'].isin(sandbox_customer_ids)
 
 # -----------------------------
 # 7. Fetch the sales mapping (non-WellProz)
@@ -704,16 +757,25 @@ df_details = (
     .drop_duplicates(subset=['sample_id'], keep='first')
 )
 
+# Sandbox customers: force revenue/commission basis to 0 after all revenue adjustments
+df_details = zero_out_sandbox_commission(df_details)
+
+
 # -----------------------------
 # 10. Commission Calculation 
 # -----------------------------
 def calc_comm(r):
-    # Fail fast in case upstream validation is bypassed
     if pd.isna(r.get('sales_role_id')):
         raise ValueError(
             f"sales_role_id is NaN for order_id={r.get('order_id')} sales_user_id={r.get('sales_user_id')}"
         )
-    
+
+    if bool(r.get('is_sandbox_customer', False)):
+        return pd.Series(
+            [0.0, 0, 0.0],
+            index=['commission_paid_to_senior', 'senior_sales_id', 'commission_paid_total']
+        )
+
     role_id = int(r['sales_role_id'])
     base    = (r['revenue_pos'] + r['revenue_neg']) * 0.04
     cust_id = int(r['customer_id'])
@@ -725,8 +787,8 @@ def calc_comm(r):
 
     total_paid = 0.0
     paid_to_senior = 0.0
-    senior   = None
-    
+    senior = None
+
     for ratio, to_sales in rules:
         share = base * (ratio / 100)
         total_paid += share
@@ -734,12 +796,13 @@ def calc_comm(r):
             paid_to_senior += share
             senior = to_sales
 
-    return pd.Series([paid_to_senior, senior, total_paid],
-                     index=['commission_paid_to_senior','senior_sales_id','commission_paid_total']
+    return pd.Series(
+        [paid_to_senior, senior, total_paid],
+        index=['commission_paid_to_senior','senior_sales_id','commission_paid_total']
     )
 
 df_details[['commission_paid_to_senior','senior_sales_id','commission_paid_total']] = \
-    df_details.apply(calc_comm,axis=1)
+    df_details.apply(calc_comm, axis=1)
 df_details['commission_from_revenue'] = (df_details['revenue_pos'] + df_details['revenue_neg']) * 0.04
 df_details['commission_final'] = df_details['commission_from_revenue'] - df_details['commission_paid_total']
 df_details['order_time'] = pd.to_datetime(df_details['created_date']).dt.strftime('%m/%d/%Y')
@@ -905,6 +968,8 @@ df_wp = df_wellProz.rename(columns={
 }).copy()
 
 df_wp['comment'] = ''
+df_wp['customer_id'] = pd.to_numeric(df_wp['customer_id'], errors='coerce')
+df_wp['is_sandbox_customer'] = df_wp['customer_id'].isin(sandbox_customer_ids)
 
 print("===== WELLPROZ DEBUG AFTER df_wp BUILD =====")
 print("nonzero revenue_pos count:", (df_wp['revenue_pos'] != 0).sum())
@@ -952,6 +1017,9 @@ df_wp.loc[~ok_mask, 'commission_paid_total'] = pd.NA
 
 df_wp['commission_from_revenue'] = (df_wp['revenue_pos'] + df_wp['revenue_neg']) * 0.04
 df_wp['commission_final'] = df_wp['commission_from_revenue'] - df_wp['commission_paid_total']
+
+# Sandbox customers: force all revenue/commission to 0
+df_wp = zero_out_sandbox_commission(df_wp)
 
 # For WellProz summary, union non-WellProz + WellProz internal_user maps
 df_int_all = pd.concat([df_int, df_int_wp], ignore_index=True).drop_duplicates(subset=['id'])
