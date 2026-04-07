@@ -20,8 +20,8 @@ from typing import Optional
 # -----------------------------
 # 1. Database Connection Settings
 # -----------------------------
-USER_MAIN = 'vamingxi'
-PW_MAIN   = '80UoA4s5K5O0KcaHU'
+USER_MAIN = 'commission'
+PW_MAIN   = 'UxX1f8a5gwrOdLE1'
 HOST_MAIN = 'lisportalprod2.mysql.database.azure.com'
 PORT_MAIN = 3306
 
@@ -50,97 +50,7 @@ END_DATE   = '2026-03-01'
 
 # Use end-of-month exchange rate for all currency conversions
 
-# RATES_2025_05_31
-# RATES = {
-#     'usd':1.00,'gbp':1.346,'eur':1.135,'chf':1 / 0.8227,
-#     'nok':1 / 10.218,'dkk':1 / 6.5561,'sek':0.10228,'mxn':1 / 19.430,'jpy':0.00694
-# }
-
-# RATES_2025_06_30
-# RATES = {
-#     'usd':1.00,'gbp':1.355,'eur':1.179,'chf':1.261,
-#     'nok':0.09932,'dkk':0.15799,'sek':0.10577,'mxn':0.05333,'jpy':0.00695
-# }
-
-# RATES_2025_07_31
-# RATES = {
-#     'usd': 1.00,
-#     'eur': 1.1416,
-#     'gbp': 1.3206,
-#     'chf': 1.2310,
-#     'nok': 0.0969,
-#     'sek': 0.1021,
-#     'mxn': 0.0530,
-#     'jpy': 0.0066,
-#     'dkk':0.15799
-# }
-
-# RATES_2025_08_31
-# RATES = {
-#     'usd': 1.0000,
-#     'eur': 1.1684,
-#     'gbp': 1.3506,
-#     'chf': 1.2495,
-#     'nok': 0.0994,
-#     'sek': 0.1057,
-#     'mxn': 0.0536,
-#     'jpy': 0.0068,
-#     'dkk': 0.1566
-# }
-
-# RATES_2025_09_30
-# RATES = {
-#     'usd': 1.0000,
-#     'eur': 1.1684,
-#     'gbp': 1.3506,
-#     'chf': 1.2495,
-#     'nok': 0.0994,
-#     'sek': 0.1057,
-#     'mxn': 0.0536,
-#     'jpy': 0.0068,
-#     'dkk': 0.1566
-# }
-
-# RATES_2025_10_31
-# RATES = {
-#     'usd': 1.0000,
-#     'eur': 1.1607,   # 1 EUR = 1 / 0.8616 USD
-#     'gbp': 1.3150,   # 1 / 0.7602
-#     'chf': 1.2429,   # 1 / 0.8046
-#     'nok': 0.0989,   # 1 / 10.1162
-#     'sek': 0.1054,   # 1 / 9.4922
-#     'mxn': 0.0539,   # 1 / 18.5504
-#     'jpy': 0.0065,   # 1 / 153.8913
-#     'dkk': 0.1546    # 1 / 6.4686
-# }
-
-# RATES_2025_11_30
-# RATES = {
-#     'usd': 1.0000,
-#     'eur': 1.1601,   # 1 EUR ≈ 1.1601 USD
-#     'gbp': 1.3239,   # 1 GBP ≈ 1.3239 USD
-#     'chf': 1.2445,   # 1 CHF ≈ 1.2445 USD
-#     'nok': 0.0984,   # 1 NOK ≈ 0.0984 USD
-#     'sek': 0.1058,   # 1 SEK ≈ 0.1058 USD
-#     'mxn': 0.0547,   # 1 MXN ≈ 0.0547 USD
-#     'jpy': 0.00641,  # 1 JPY ≈ 0.00641 USD
-#     'dkk': 0.1547    # 1 DKK ≈ 0.1547 USD
-# }
-
-# RATES_2025_12_31
-# RATES = {
-#     'usd': 1.0000,
-#     'eur': 1.1733,   # 1 EUR ≈ 1.1733 USD 
-#     'gbp': 1.3448,   # 1 GBP ≈ 1.3448 USD 
-#     'chf': 1.2590,   # 1 CHF ≈ ~1.2590 USD
-#     'nok': 0.0985,   # 1 NOK ≈ ~0.0985 USD
-#     'sek': 0.1076,   # 1 SEK ≈ ~0.1076 USD
-#     'mxn': 0.0555,   # 1 MXN ≈ ~0.0555 USD
-#     'jpy': 0.00638,  # 1 JPY ≈ ~0.00638 USD
-#     'dkk': 0.1558    # 1 DKK ≈ ~0.1558 USD
-# }
-
-# RATES_2026_01_31 (approximate market FX)
+# RATES_2026_01_31
 # RATES = {
 #     'usd': 1.0000,
 #     'eur': 1.20,    # 1 EUR ≈ ~1.20 USD
@@ -334,7 +244,7 @@ df_with_sample['sample_id'] = df_with_sample['sample_id'].astype(int)
 missing = []
 for chunk in chunked_list(df_with_sample['sample_id'].unique().tolist(), 1000):
     exist = pd.read_sql(
-        f"SELECT sample_id FROM lis_core_v7.sample WHERE sample_id IN ({','.join(map(str,chunk))});",
+        f"SELECT sample_id FROM coresamplesv2.sample WHERE sample_id IN ({','.join(map(str,chunk))});",
         engine_main
     )['sample_id'].astype(int).tolist()
     missing += [sid for sid in chunk if sid not in exist]
@@ -399,7 +309,7 @@ if df_wellProz.empty:
     print("No WellProz orders found. ")
     sys.exit(0)
 
-# 5.2 Fail Fast instead of handling exception:
+# 5.2 Fail Fast instead of handling exception (check whether failed order is valid):
 bad_sales_null = df_wellProz[df_wellProz['sales_user_id'].isna()]
 if not bad_sales_null.empty:
     fail_with_orders(
@@ -495,7 +405,7 @@ def fetch_with_backoff(barcode, max_attempts = 5):
 
                 print(f"[WARN ] {barcode}: HTTP {code}, retry in {delay}s (attempt {attempt}/{max_attempts})")
                 time.sleep(delay + random.uniform(0, 0.5))
-                delay = min(delay * 2, 30)   # 防止 delay 爆炸
+                delay = min(delay * 2, 30)   
 
             else:
                 print(f"[ERROR] {barcode}: HTTP {code} → NA")
@@ -525,7 +435,7 @@ with ThreadPoolExecutor(max_workers=2) as executor:
     ):
         profit_map[bc] = val
 
-# ===== Debug API ====        
+# ===== Debug ====        
 # codes = df_wellProz['julien_barcode'].dropna().unique().tolist()
 # print("test barcode:", codes[0])
 # print("test result:", fetch_with_backoff(codes[0], max_attempts=5))
@@ -595,7 +505,6 @@ if sales_ids:
         SELECT internal_user_id AS id,
                internal_user_name,
                internal_user_role_id
-        # -- FROM lis_core_v7.internal_user
         FROM coresamplesv2.internal_user
         WHERE internal_user_id IN ({','.join(map(str,sales_ids))})
           AND internal_user_role='sales';
@@ -759,7 +668,6 @@ df_details = (
 
 # Sandbox customers: force revenue/commission basis to 0 after all revenue adjustments
 df_details = zero_out_sandbox_commission(df_details)
-
 
 # -----------------------------
 # 10. Commission Calculation 
